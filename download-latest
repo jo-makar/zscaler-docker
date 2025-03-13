@@ -1,0 +1,25 @@
+#!/bin/bash
+# Download the latest version of the Zscaler installer
+
+set -o errexit
+
+# Determine the latest version
+# Go to https://help.zscaler.com/zscaler-client-connector/client-connector-app-release-summary-<year>
+# Specify the OS via the dropdown (internally triggers a XmlHttpRequest)
+
+curl -fSs -o data.json "https://help.zscaler.com/zapi/fetch-data?url_alias=/zscaler-client-connector/client-connector-app-release-summary-$(date +%Y)&view_type=full&cloud=false&domain=zscaler&applicable_category=3336&applicable_version=all&applicable_parent_version=&applicable_product=&keyword=&language=en&_format=json"
+
+[ $(jq -r .data.info.status data.json) -eq 200 ] || { echo unexpected response >/dev/stderr; exit 1; }
+
+# `.[]` is the array/object iterator and is wrapped in an `[ ... ]` array construction to retrieve the first key from the object
+title=$(jq -r '[ .data.body.release_notes.entries.[] ][0].release.available[0].title' data.json)
+[ "$title" != null ] || { echo title not found >/dev/stderr; exit 1; }
+
+version=$(echo $title | awk 'match($0, /Client Connector [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ for Linux/) { print substr($0, RSTART+17, RLENGTH-17-10) }')
+[ -n "$version" ] || { echo version not found >/dev/stderr; exit 1; }
+
+url="https://d32a6ru7mhaq0c.cloudfront.net/Zscaler-linux-$version-installer.run"
+echo download the latest version: $url
+curl -fO $url
+
+rm -f data.json
