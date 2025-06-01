@@ -72,7 +72,7 @@ services:
         condition: service_healthy
     image: docker.elastic.co/kibana/kibana:8.17.3
     volumes:
-      - elasticsearch-config:/usr/share/elasticsearch/config
+      - elasticsearch-config:/usr/share/elasticsearch/config:ro
       - kibana-data:/usr/share/kibana/data
     ports:
       - 5601:5601
@@ -95,7 +95,91 @@ services:
         /bin/tini -s -- /usr/local/bin/kibana-docker
       '
     # TODO Consider adding a mem_limit
+  logstash:
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    image: docker.elastic.co/logstash/logstash:8.17.3
+    volumes:
+      - type: volume
+        source: elasticsearch-config
+        target: /usr/share/elasticsearch/config
+        read_only: true
+      - type: bind
+        source: logs
+        target: /tmp/zsatray-logs
+        read_only: true
+    configs:
+      - source: logstash.conf
+        target: /usr/share/logstash/config/logstash.conf
+    user: '0'
+    command: >
+      bash -c '
+        cd /usr/share/logstash;
+
+        # FIXME STOPPED Ideally simply launch logstash here but there seems to be a bit of munging still needed
+        #               Apparently there is binary data in some of the log entries, these will need to be base64 encoded first
+        #               Example: awk 'NR==62492' logs/ZSATray_2025-01-29-20-21-11.099011.log
+        #               Write a Python? script to handle this and write a separate log file for logstash ingest?
+        apt update && apt install -y less vim;
+
+        sleep inf;
+        #bin/logstash -f config/logstash.conf;
+      '
 volumes:
   elasticsearch-config:
   elasticsearch-data:
   kibana-data:
+configs:
+  logstash.conf:
+    content: |
+      input {
+        file {
+          mode => read
+          path => [ "/tmp/zsatray-logs/*.log" ]
+
+          # Ref: https://www.elastic.co/docs/reference/logstash/plugins/plugins-codecs-multiline
+          codec => multiline {
+            pattern => "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}"
+            negate => true
+            what => "previous"
+          }
+        }
+      }
+
+      filter {
+        if [message] =~ "^Redirected stderr$" { drop {} }
+
+        # Refs: https://www.elastic.co/docs/reference/logstash/plugins/plugins-filters-grok
+        #       https://github.com/logstash-plugins/logstash-patterns-core/blob/main/patterns/ecs-v1/grok-patterns
+        grok {
+          pattern_definitions => {
+           "TIMESTAMP" => "\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}"
+           "TIMEZONE" => "[-+]?\d{4}"
+           "SYSTEM" => "[^]]+"
+          }
+          match => { "message" => "^%{TIMESTAMP:timestamp}\d{3}\(%{TIMEZONE:timezone}\)\[\d+:\d+\]\s+%{WORD:loglevel}(?:\s+\[%{SYSTEM:system}\](?:\s+\[%{SYSTEM:subsystem}\])?)?\s+%{GREEDYDATA:logentry}" }
+        }
+
+        # Ref: https://www.elastic.co/docs/reference/logstash/plugins/plugins-filters-date
+        date {
+          match => [ "timestamp", "yyyy-MM-dd HH:mm:ss.SSS" ]
+          timezone => "%{timezone}"
+        }
+
+        mutate {
+          rename => { "logentry" => "message" }
+          remove_field => [ "timestamp", "timezone" ]
+        }
+      }
+
+      output {
+        elasticsearch {
+          hosts => [ "https://elasticsearch:9200" ]
+          index => "zsatray"
+          user => "elastic"
+          # TODO Work out how to use the elastic-password alias here
+          password => "elastic"
+          ssl_certificate_authorities => [ "/usr/share/elasticsearch/config/certs/ca/ca.crt" ]
+        }
+      }
