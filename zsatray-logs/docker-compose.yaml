@@ -1,0 +1,101 @@
+# Based on https://www.elastic.co/guide/en/elasticsearch/reference/8.17/docker.html#docker-compose-file
+#          https://github.com/elastic/elasticsearch/blob/8.17/docs/reference/setup/install/docker/docker-compose.yml
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    volumes:
+      - elasticsearch-config:/usr/share/elasticsearch/config
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+    environment:
+      node.name: elasticsearch
+      cluster.name: cluster
+      cluster.initial_master_nodes: elasticsearch
+      ELASTIC_PASSWORD: &elastic-password elastic
+      bootstrap.memory_lock: true
+      xpack.security.enabled: true
+      xpack.security.http.ssl.enabled: true
+      xpack.security.http.ssl.key: certs/elasticsearch/elasticsearch.key
+      xpack.security.http.ssl.certificate: certs/elasticsearch/elasticsearch.crt
+      xpack.security.http.ssl.certificate_authorities: certs/ca/ca.crt
+      xpack.security.transport.ssl.enabled: true
+      xpack.security.transport.ssl.key: certs/elasticsearch/elasticsearch.key
+      xpack.security.transport.ssl.certificate: certs/elasticsearch/elasticsearch.crt
+      xpack.security.transport.ssl.certificate_authorities: certs/ca/ca.crt
+      xpack.security.transport.ssl.verification_mode: certificate
+      xpack.license.self_generated.type: basic
+      xpack.ml.use_auto_machine_memory_percent: true
+    command: >
+      bash -c '
+        cd /usr/share/elasticsearch;
+        mkdir -p config/certs;
+
+        echo "Creating CA";
+        bin/elasticsearch-certutil ca --pem -out config/certs/ca.zip;
+        unzip config/certs/ca.zip -d config/certs;
+
+        echo "Creating certs";
+        echo -ne \
+          "instances:\n" \
+          "  - name: elasticsearch\n" \
+          "    dns:\n" \
+          "      - elasticsearch\n" \
+          "      - localhost\n" \
+          "    ip:\n" \
+          "      - 127.0.0.1\n" \
+          > config/certs/instances.yml;
+        bin/elasticsearch-certutil cert --pem -out config/certs/certs.zip \
+          --in config/certs/instances.yml \
+          --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key;
+        unzip config/certs/certs.zip -d config/certs;
+
+        /bin/tini -s -- /usr/local/bin/docker-entrypoint.sh;
+      '
+    healthcheck:
+      test: >
+        bash -c '
+          cacert=/usr/share/elasticsearch/config/certs/ca/ca.crt;
+          [ -f $$cacert ] && \
+          [ $$(curl --cacert $$cacert -u elastic:$$ELASTIC_PASSWORD -s -o/dev/null -w "%{response_code}\n" https://localhost:9200) -eq 200 ] && \
+          [ $$(curl --cacert $$cacert -u elastic:$$ELASTIC_PASSWORD -s "https://localhost:9200/_cat/health?h=status") = green ];
+        '
+    # TODO Consider adding a mem_limit
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+  kibana:
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    image: docker.elastic.co/kibana/kibana:8.17.3
+    volumes:
+      - elasticsearch-config:/usr/share/elasticsearch/config
+      - kibana-data:/usr/share/kibana/data
+    ports:
+      - 5601:5601
+    environment:
+      elastic_password: *elastic-password
+      KIBANA_PASSWORD: &kibana-password kibana
+      SERVERNAME: kibana
+      ELASTICSEARCH_HOSTS: https://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: *kibana-password
+      ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES: /usr/share/kibana/config/certs/ca/ca.crt
+    command: >
+      bash -c '
+        cd /usr/share/kibana;
+
+        cp -r /usr/share/elasticsearch/config/certs config/;
+
+        curl --cacert config/certs/ca/ca.crt -u elastic:$$elastic_password -H "Content-Type: application/json" https://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"$$KIBANA_PASSWORD\"}";
+
+        /bin/tini -s -- /usr/local/bin/kibana-docker
+      '
+    # TODO Consider adding a mem_limit
+volumes:
+  elasticsearch-config:
+  elasticsearch-data:
+  kibana-data:
