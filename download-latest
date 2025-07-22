@@ -5,7 +5,7 @@ set -o errexit
 
 # Determine the latest version
 # Go to https://help.zscaler.com/zscaler-client-connector/client-connector-app-release-summary-<year>
-# Specify the OS via the dropdown (internally triggers a XmlHttpRequest)
+# Specify the OS via the dropdown (internally triggers a XmlHttpRequest); 3336 for Linux, 2896 for macOS
 
 curl -fSs -o data.json "https://help.zscaler.com/zapi/fetch-data?url_alias=/zscaler-client-connector/client-connector-app-release-summary-$(date +%Y)&view_type=full&cloud=false&domain=zscaler&applicable_category=3336&applicable_version=all&applicable_parent_version=&applicable_product=&keyword=&language=en&_format=json"
 
@@ -19,6 +19,8 @@ version=$(echo $title | awk 'match($0, /Client Connector [0-9]+\.[0-9]+\.[0-9]+\
 [ -n "$version" ] || { echo version not found >/dev/stderr; exit 1; }
 
 url="https://d32a6ru7mhaq0c.cloudfront.net/Zscaler-linux-$version-installer.run"
+# For macOS: Zscaler-osx-$version-installer.app.zip
+
 echo download the latest version: $url
 curl -fO $url
 
